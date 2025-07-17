@@ -1,13 +1,14 @@
-#pragma once
-#include "MemoryPool.h"
 #include "ThreadCache.h"
+#include "CentralCache.h"
+
+namespace MyMemoryPool {
 
 ThreadCache::_batchNum(FREE_LIST_SIZE, 1); // 初始化批量分配的数量
 ThreadCache ThreadCache::_instance; // 静态实例化ThreadCache单例
 
 static void* localAllocate(size_t size) { // 实现线程的独立分配
     if(ptrTLSThreadCache == nullptr) {
-        ptrTLSThreadCache = new ThreadCache();
+        ptrTLSThreadCache = _tcPool.New();
     }
     return ptrTLSThreadCache->allocate(size);
 }
@@ -24,7 +25,7 @@ void* ThreadCache::allocate(size_t size) {
         std::cerr << "Error: Attempt to allocate zero size memory." << std::endl;
         return nullptr;
     }
-    if(size > MAX_BYTES){
+    if(size > MAX_BYTES){ // 大于最大字节数，直接调用系统分配
         return malloc(size);
     }
 
@@ -42,7 +43,7 @@ void* ThreadCache::allocate(size_t size) {
 
 void ThreadCache::deallocate(void* ptr, size_t size){
     assert(ptr != nullptr && size > 0);
-    if(size > MAX_BYTES) {
+    if(size > MAX_BYTES) { // 大于最大字节数，直接调用系统释放
         return free(ptr);
     }
     size_t index = SizeClass::getIndex(size);
@@ -50,11 +51,11 @@ void ThreadCache::deallocate(void* ptr, size_t size){
     _freeList[index] = ptr;
     _freeListLength[index]++;
 
-    if(isReturnToCentralCache(index)) returnMemoryToCentralCache(ptr, size);
+    if(isReturnToCentralCache(index)) returnMemoryToCentralCache(_freeList[index], size);
 }
 
 bool ThreadCache::isReturnToCentralCache(size_t index) {
-    return _freeListLength[index] >= MAX_FREELIST_NUMBERS;
+    return _freeListLength[index] > MAX_FREELIST_NUMBERS;
 }
 
 void* ThreadCache::getMemoryFromCentralCache(size_t index, size_t alignedSize) {
@@ -73,6 +74,17 @@ void* ThreadCache::getMemoryFromCentralCache(size_t index, size_t alignedSize) {
     }
 }
 
-void ThreadCache::returnMemoryToCentralCache(void* ptr, size_t size) {
-    
+void ThreadCache::returnMemoryToCentralCache(void*& freelist, size_t size) {
+    void* start = freelist;
+    void* end = start;
+    size_t index = SizeClass::getIndex(size);
+    for(size_t i = 1; i < _batchNum[index]; i++) { // 慢开始算法控制要返回的内存块数量
+        end = ptrNext(end);
+    }
+    freelist = ptrNext(end); // 更新自由链表头指针
+    ptrNext(end) = nullptr; // 断开链表
+    _freeListLength[index] -= _batchNum[index];
+    CentralCache::getInstance().FreeMemoryToSpanList(start, size);
 }
+
+} // namespace MyMemoryPool

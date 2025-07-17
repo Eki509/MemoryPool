@@ -4,19 +4,41 @@
 #include <thread>
 #include <struct>
 #include <mutex>
+#include <unordered_map>
 
 namespace MyMemoryPool {
+
+    #if defined(__x86_64__) || defined(_M_X64) || defined(__aarch64__)
+    // 64位系统
+        typedef unsigned long long PAGE_ID;
+    #elif defined(__i386__) || defined(_M_IX86) || defined(__arm__)
+    // 32位系统
+        typedef size_t PAGE_ID;
+    #endif
 
     #define FREE_LIST_SIZE 216 // 自由链表数组的长度
     #define MAX_BYTES 512 * 1024 // 最大字节数为512KB
     #define MAX_FREELIST_NUMBERS 256 // 每个自由链表的最大节点数
+    #define PAGE_SIZE 8192 // 定义页面大小为8KB
+    #define MAX_PAGES 64 // 每个Span最多包含64页
     const vector<size_t> Hash_Buckets = {16, 56, 56, 56, 24, 8}; // 总和为FREE_LIST_SIZE
 
+    // 将指针强转成void**类型，再进行解引用,即可访问void*大小的地址，在64位系统中即为对该内存块头8字节的访问
     static void* ptrNext(void* ptr) { // 获取下一个指针
         return *reinterpret_cast<void**>(ptr);
     }
-    // 将指针强转成void**类型，再进行解引用,即可访问void*大小的地址，在64位系统中即为对该内存块头8字节的访问
-
+    
+    static inline void* systemAlloc(size_t numPages){ // 直接与操作系统交互通过mmap申请大块内存
+        size_t size = numPages * PAGE_SIZE;
+        void* ptr = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if(ptr = MAP_FAILED){
+            std::cerr << "Error: Memory allocation failed." << std::endl;
+            return nullptr;
+        }
+        memset(ptr, 0, size); // 清零内存
+        return ptr; // 返回分配的内存地址
+    }
+    
     class SizeClass { // SizeClass类用于处理内存大小分类
     public:
         // 平衡哈希桶的数量和内碎片的大小，将内碎片的浪费控制在11%左右
@@ -67,6 +89,16 @@ namespace MyMemoryPool {
             }
             return num;
         }
+        static size_t normPageNum(size_t size){
+            assert(size > 0 && size <= MAX_BYTES);
+            size_t num = normBatchNum(size);
+            size_t sizePages = num * size;
+            size_t pageNum = (sizePages + PAGE_SIZE - 1) / PAGE_SIZE; // 向上取整计算页数
+            if(pageNum < 1) {
+                pageNum = 1; // 最小页数为1
+            }
+            return pageNum;
+        }
     private:
         static inline size_t _getIndex(size_t size, size_t alignsize){ // 获取内存大小对应的索引
             return ((size + (1 << alignsize) - 1) >> alignsize) - 1; // 采用位运算提高效率
@@ -87,6 +119,108 @@ namespace MyMemoryPool {
             //    return (size / alignsize + 1) * alignsize;
             // }
         }
+    }
+
+    class SpanList{ // 维护一个双向循环链表类，用于中心缓存构建Span
+    public:
+        std::mutex _mutexSpan; // 互斥锁
+        struct Span{
+            PAGE_ID _pageID = 0; // 页ID，内存在空间中的编号
+            size_t _numPages = 0; //对应的页数
+            Span* _next = nullptr; // 指向下一个Span的指针
+            Span* _prev = nullptr; // 指向上一个Span的指针
+            size_t _useCount = 0; // 分配给ThreadCache的使用计数
+            void* _freeList = nullptr; // 每个Span下挂载的自由链表
+            bool _isUse = false; // 是否正在使用
+        };
+        SpanList() : _head() {_head = new Span(); _head->_next = _head; _head->_prev = _head; } // 初始化头结点
+        void push(Span* ptr, Span* index){ // 将一个元素插入到链表index之前（不用考虑越界问题）
+            if (ptr == nullptr || index == nullptr) return;
+            Span* temp = index->_prev;
+            index->_prev = ptr;
+            temp->_next = ptr;
+            ptr->_prev = temp;
+            ptr->_next = index;
+        }
+        void pop(Span* index){ // 删除链表中index处的元素，但是不释放它的内存
+            if(index == nullptr) return;
+            Span* prev = index->_prev;
+            Span* next = index->_next;
+            prev->_next = next;
+            next->_prev = prev;
+        }
+        Span* Begin() { // 返回链表的头结点
+            return _head->_next;
+        }
+        Span* End() { // 返回链表的尾结点
+            return _head;
+        }
+        bool isEmpty() { // 判断链表是否为空
+            return _head->_next == _head;
+        }
+        void PushFront(Span* ptr){ // 在链表头部插入一个元素
+            push(ptr, Begin());
+        }
+        Span* PopFront(){ // 删除链表头部的元素并返回它
+            Span* front = Begin();
+            pop(front);
+            return front;
+        }
+        void clear() { // 清空链表
+            Span* current = _head->_next;
+            while (current != _head) {
+                Span* next = current->_next;
+                delete current; // 释放当前节点的内存
+                current = next; // 移动到下一个节点
+            }
+            _head->_next = _head; // 重置头结点
+            _head->_prev = _head;
+        }
+        ~SpanList() { // 析构函数，释放链表内存
+            clear();
+            delete _head; // 释放头结点内存
+        }
+    private:
+        Span* _head;
+    };
+
+    template<typename T>
+    class DtLenMemoryPool { // 定长内存池类，用于代替本项目中的new/delete操作
+    public:
+        T* New(){
+            T* ptr = nullptr;
+            if(_freeList != nullptr){
+                void* next = ptrNext(_freeList);
+                ptr = static_cast<T*>(_freeList);
+                _freeList = next; // 更新自由链表头指针
+            }else{
+                if(_remainSize < sizeof(T)){ // 剩余空间不足，重新申请
+                    _remainSize = 512 * 1024; // 每次申请512KB,实现定长512KB
+                    _memory = static_cast<char*>systemAlloc(_remainSize / PAGE_SIZE); // 申请内存
+                    if(_memory == nullptr) {
+                        std::cerr << "Error: Memory allocation failed." << std::endl;
+                        return nullptr;
+                    }
+                }
+                ptr = static_cast<T*>_memory;
+                size_t ptrSize = sizeof(T) < sizeof(void*) ? sizeof(void*) : sizeof(T); // 确保指针大小不小于T的大小
+                _memory += ptrSize;
+                _remainSize -= ptrSize; // 更新剩余空间
+            }
+            new(ptr)T;
+            return ptr;
+        }
+
+        void Delete(T* ptr){
+            if(ptr == nullptr) return;
+            ptr->~T(); // 调用析构函数
+            ptrNext(ptr) = _freeList; // 将释放的内存块插入回自由链表头
+            _freeList = ptr;
+        }
+    private:
+        char* _memory = nullptr; // 内存池的起始地址
+        size_t _remainSize = 0; // 剩余空间大小
+        void* _freeList = nullptr; // 自由链表头指针
     }
 
 } // namespace MyMemoryPool
