@@ -1,0 +1,2 @@
+*_内存池MemoryPool_*
+在Linux系统中构建一个内存池，用于代替malloc/free为小对象分配内存
