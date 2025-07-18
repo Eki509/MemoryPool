@@ -1,11 +1,10 @@
 #include "../include/PageCache.h"
-#include <sys/mman.h>
 
 namespace MyMemoryPool {
     PageCache PageCache::_instance; // 静态实例化PageCache单例
 
     SpanList::Span* PageCache::AllocNewSpanToCentralCache(size_t numPages){
-        assert(numPages > 0 && numPages < MAX_PAGES);
+        assert(numPages > 0 && numPages <= MAX_PAGES);
         if(!_spanList[numPages - 1].isEmpty()) return _spanList[numPages - 1].PopFront(); // 有对应页数的Span直接返回
         for(size_t i = numPages; i < MAX_PAGES; i++){ // 依次向后查找页数更大的Span
             if(!_spanList[i].isEmpty()){ // 找到了返回numPages对应大小的Span,剩余的页数挂载到相应的链表前面
@@ -27,14 +26,14 @@ namespace MyMemoryPool {
         // 没找到，直接向系统申请一个最大页数的Span
         SpanList::Span* newSpan = _spanPool.New();
         void* ptr = systemAlloc(MAX_PAGES);
-        newSpan->_pageID = (PAGE_ID)((uintptr_t)ptr / PAGE_SIZE);
+        newSpan->_pageID = (PAGE_ID)((uintptr_t)ptr >> PAGE_SHIFT);
         newSpan->_numPages = MAX_PAGES;
         _spanList[MAX_PAGES - 1].PushFront(newSpan); // 将新Span挂载到对应的链表上
         return AllocNewSpanToCentralCache(numPages); // 递归调用，返回对应页数的Span,对刚分配的大块内存进行切分
     }
 
     SpanList::Span* PageCache::getIdOfSpan(void* ptr) {
-        PAGE_ID id = ((PAGE_ID)((uintptr_t)ptr / PAGE_SIZE));
+        PAGE_ID id = ((PAGE_ID)ptr >> PAGE_SHIFT); 
         std::unique_lock<std::mutex> lock(_mutexPage);
         auto it = _spanMap.find(id);
         if(it != _spanMap.end()) {

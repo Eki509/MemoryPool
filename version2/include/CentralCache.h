@@ -1,7 +1,8 @@
 #pragma once
-#include <MemoryPool.h>
+#include "MemoryPool.h"
+#include "../include/PageCache.h"
 
-namespace MemoryPool {
+namespace MyMemoryPool {
 
     class CentralCache {
     public:
@@ -10,13 +11,13 @@ namespace MemoryPool {
         }
         size_t FetchMemoryForThreadCache(void*& start, void*& end, size_t batchnum, size_t size);
         SpanList::Span* getSpanFromSpanList(SpanList& spanlist, size_t size); 
+        void FreeMemoryToSpanList(void* start, size_t size); // 将内存块释放到SpanList中
     private:
-        CentralCache() = default; // 私有构造函数
+        CentralCache() : _spanList(FREE_LIST_SIZE) {} // 私有构造函数
         CentralCache(const CentralCache&) = delete; // 禁止拷贝构造
         CentralCache& operator=(const CentralCache&) = delete; // 禁止赋值操作
         static CentralCache _instance; // 单例
-        std::vector<SpanList> _spanList(FREE_LIST_SIZE); // 每个元素对应一个SpanList
-        void FreeMemoryToSpanList(void* start, size_t size); // 将内存块释放到SpanList中
+        std::vector<SpanList> _spanList; // 每个元素对应一个SpanList
     };
 
 } // namespace MemoryPool

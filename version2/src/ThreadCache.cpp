@@ -3,22 +3,9 @@
 
 namespace MyMemoryPool {
 
-ThreadCache::_batchNum(FREE_LIST_SIZE, 1); // 初始化批量分配的数量
-ThreadCache ThreadCache::_instance; // 静态实例化ThreadCache单例
-
-static void* localAllocate(size_t size) { // 实现线程的独立分配
-    if(ptrTLSThreadCache == nullptr) {
-        ptrTLSThreadCache = _tcPool.New();
-    }
-    return ptrTLSThreadCache->allocate(size);
-}
-static void localDeallocate(void* ptr, size_t size) { // 实现线程的独立释放
-    if(ptrTLSThreadCache == nullptr) {
-        std::cerr << "Error: ThreadCache not initialized." << std::endl;
-        return;
-    }
-    ptrTLSThreadCache->deallocate(ptr, size);
-}
+thread_local ThreadCache* ptrTLSThreadCache = nullptr; // 定义线程局部存储的ThreadCache指针
+std::vector<size_t> ThreadCache::_batchNum(FREE_LIST_SIZE, 1); // 初始化批量分配的数量
+// ThreadCache ThreadCache::_instance; // 静态实例化ThreadCache单例
 
 void* ThreadCache::allocate(size_t size) {
     if(size == 0) {
@@ -60,7 +47,8 @@ bool ThreadCache::isReturnToCentralCache(size_t index) {
 
 void* ThreadCache::getMemoryFromCentralCache(size_t index, size_t alignedSize) {
     size_t batchNum = std::min(getBatchNum(index), SizeClass::normBatchNum(alignedSize)); // 批量获取的数量，取规范化和当前批量分配数量的最小值，实现慢开始调节算法
-    void* start = nullptr, end = nullptr;
+    void* start = nullptr;
+    void* end = nullptr;
     size_t result = CentralCache::getInstance().FetchMemoryForThreadCache(start, end, batchNum, alignedSize);
     if(result == 1){
         assert(start == end);

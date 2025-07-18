@@ -1,5 +1,4 @@
 #include "../include/CentralCache.h"
-#include "../include/PageCache.h"
 
 namespace MyMemoryPool {
 
@@ -8,11 +7,11 @@ CentralCache CentralCache::_instance; // 静态实例化CentralCache单例
 size_t CentralCache::FetchMemoryForThreadCache(void*& start, void*& end, size_t batchnum, size_t size) {
     assert(size > 0 && size <= MAX_BYTES);
     size_t index = SizeClass::getIndex(size);
+    size_t count = 1;
     {
         std::unique_lock<std::mutex> lock(_spanList[index]._mutexSpan); 
         SpanList::Span* span = getSpanFromSpanList(_spanList[index], size);
         assert(span != nullptr && span->_freeList != nullptr);
-        size_t count = 1;
         start = span->_freeList;
         end = start;
         while(ptrNext(end) != nullptr && count < batchnum) { // 取出要分配的内存块数量，不够就有多少拿多少
@@ -26,7 +25,7 @@ size_t CentralCache::FetchMemoryForThreadCache(void*& start, void*& end, size_t 
     return count; // 返回分配的内存块数量
 }
 
-Span* CentralCache::getSpanFromSpanList(SpanList& spanlist, size_t size) {
+SpanList::Span* CentralCache::getSpanFromSpanList(SpanList& spanlist, size_t size) {
     assert(size > 0 && size <= MAX_BYTES);
     SpanList::Span* span = spanlist.Begin();
     while(span != spanlist.End()) {
@@ -37,21 +36,20 @@ Span* CentralCache::getSpanFromSpanList(SpanList& spanlist, size_t size) {
     }
     // 没找到合适的Span，申请新的Span
     spanlist._mutexSpan.unlock();  // 先解CentralCache的互斥锁，避免其他线程释放内存发生阻塞
-    { // 锁住PageCache的全局互斥锁，防止其他线程申请内存
-        std::lock_guard<std::mutex> lock(PageCache::getInstance()._mutexPage);
-        SpanList::Span* newSpan = PageCache::getInstance().AllocNewSpanToCentralCache(SizeClass::getPageNum(size));
-        newspan->_isUse = true; // 标记为正在使用
-    }
-    void* start = (void*)(newSpan->_pageID * PAGE_SIZE);
+    PageCache::getInstance()._mutexPage.lock(); // 锁住PageCache的全局互斥锁，防止其他线程申请内存
+    SpanList::Span* newSpan = PageCache::getInstance().AllocNewSpanToCentralCache(SizeClass::normPageNum(size));
+    newSpan->_isUse = true; // 标记为正在使用
+    newSpan->_spanMemorySize = size; // 设置Span下挂载的内存块大小
+    PageCache::getInstance()._mutexPage.unlock();
+    void* start = (void*)(newSpan->_pageID << PAGE_SHIFT);
     newSpan->_freeList = start; // 将新分配的内存块作为自由链表的头
-    newSpan->_spanMemorySize = size; // 设置Span的内存块大小
-    void* end = (void*)((newSpan->_pageID + newSpan->_numPages) * PAGE_SIZE); // 计算Span的结束地址
+    void* end = (void*)((newSpan->_pageID + newSpan->_numPages) << PAGE_SHIFT); // 计算Span的结束地址
     char* ptr = (char*)start;
     ptr += size; // 将指针移动到下一个内存块位置
     void* temp = newSpan->_freeList;
-    while(ptr < (char*)end) { // 将剩余的内存块加入自由链表
+    while(ptr < end) { // 将剩余的内存块加入自由链表
         ptrNext(temp) = ptr; // 将当前内存块的下一个指针指向下一个内存块
-        temp = ptr; // 更新当前指针
+        temp = ptrNext(temp); // 更新当前指针
         ptr += size; // 移动到下一个内存块位置
     }
     spanlist._mutexSpan.lock(); // 恢复CentralCache的互斥锁，避免在挂载Span后发生其他线程的竞争

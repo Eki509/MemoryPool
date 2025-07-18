@@ -1,9 +1,12 @@
+#pragma once
 #include <iostream>
 #include <vector>
 #include <memory>
 #include <thread>
-#include <struct>
 #include <mutex>
+#include <sys/mman.h>
+#include <cstring>
+#include <cassert>
 #include <unordered_map>
 
 namespace MyMemoryPool {
@@ -17,21 +20,22 @@ namespace MyMemoryPool {
     #endif
 
     #define FREE_LIST_SIZE 216 // 自由链表数组的长度
-    #define MAX_BYTES 512 * 1024 // 最大字节数为512KB
+    #define MAX_BYTES (512 * 1024) // 最大字节数为512KB
     #define MAX_FREELIST_NUMBERS 256 // 每个自由链表的最大节点数
-    #define PAGE_SIZE 8192 // 定义页面大小为8KB
-    #define MAX_PAGES 64 // 每个Span最多包含64页
-    const vector<size_t> Hash_Buckets = {16, 56, 56, 56, 24, 8}; // 总和为FREE_LIST_SIZE
+    #define PAGE_SIZE 4096 // 定义页面大小为4KB
+    #define MAX_PAGES 128 // 每个Span最多包含128页
+    #define PAGE_SHIFT 12 // 页面大小的位移量，4096 = 2^12
+    const std::vector<size_t> Hash_Buckets = {16, 56, 56, 56, 24, 8}; // 总和为FREE_LIST_SIZE
 
     // 将指针强转成void**类型，再进行解引用,即可访问void*大小的地址，在64位系统中即为对该内存块头8字节的访问
-    static void* ptrNext(void* ptr) { // 获取下一个指针
+    static void*& ptrNext(void* ptr) { // 获取下一个指针
         return *reinterpret_cast<void**>(ptr);
     }
     
     static inline void* systemAlloc(size_t numPages){ // 直接与操作系统交互通过mmap申请大块内存
         size_t size = numPages * PAGE_SIZE;
         void* ptr = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-        if(ptr = MAP_FAILED){
+        if(ptr == MAP_FAILED){
             std::cerr << "Error: Memory allocation failed." << std::endl;
             return nullptr;
         }
@@ -45,7 +49,7 @@ namespace MyMemoryPool {
         static inline size_t getIndex(size_t size) { // 根据自定规则建立哈希映射--->>>映射到哪一个哈希桶,返回索引
             assert(size > 0 && size <= MAX_BYTES); 
             if(size <= 128){ // 小于等于128字节，按照8字节对齐
-                return _getsizeIndex(size, 3);
+                return _getIndex(size, 3);
             }else if(size <= 1024){ // 小于等于1024字节，按照16字节对齐
                 return _getIndex(size - 128, 4) + Hash_Buckets[0];
             }else if(size <= 8 * 1024){ // 小于等于8KB，按照128字节对齐
@@ -97,6 +101,9 @@ namespace MyMemoryPool {
             if(pageNum < 1) {
                 pageNum = 1; // 最小页数为1
             }
+            if(pageNum > MAX_PAGES){
+                pageNum = MAX_PAGES; // 最大页数为MAX_PAGES
+            }
             return pageNum;
         }
     private:
@@ -119,7 +126,7 @@ namespace MyMemoryPool {
             //    return (size / alignsize + 1) * alignsize;
             // }
         }
-    }
+    };
 
     class SpanList{ // 维护一个双向循环链表类，用于中心缓存构建Span
     public:
@@ -130,6 +137,7 @@ namespace MyMemoryPool {
             Span* _next = nullptr; // 指向下一个Span的指针
             Span* _prev = nullptr; // 指向上一个Span的指针
             size_t _useCount = 0; // 分配给ThreadCache的使用计数
+            size_t _spanMemorySize = 0; // Span下挂载的的内存块大小
             void* _freeList = nullptr; // 每个Span下挂载的自由链表
             bool _isUse = false; // 是否正在使用
         };
@@ -188,6 +196,7 @@ namespace MyMemoryPool {
     class DtLenMemoryPool { // 定长内存池类，用于代替本项目中的new/delete操作
     public:
         T* New(){
+            std::lock_guard<std::mutex> lock(_mutex); // 确保线程安全
             T* ptr = nullptr;
             if(_freeList != nullptr){
                 void* next = ptrNext(_freeList);
@@ -196,13 +205,13 @@ namespace MyMemoryPool {
             }else{
                 if(_remainSize < sizeof(T)){ // 剩余空间不足，重新申请
                     _remainSize = 512 * 1024; // 每次申请512KB,实现定长512KB
-                    _memory = static_cast<char*>systemAlloc(_remainSize / PAGE_SIZE); // 申请内存
+                    _memory = static_cast<char*>(systemAlloc(_remainSize >> PAGE_SHIFT)); // 申请内存
                     if(_memory == nullptr) {
                         std::cerr << "Error: Memory allocation failed." << std::endl;
                         return nullptr;
                     }
                 }
-                ptr = static_cast<T*>_memory;
+                ptr = reinterpret_cast<T*>(_memory);
                 size_t ptrSize = sizeof(T) < sizeof(void*) ? sizeof(void*) : sizeof(T); // 确保指针大小不小于T的大小
                 _memory += ptrSize;
                 _remainSize -= ptrSize; // 更新剩余空间
@@ -213,6 +222,7 @@ namespace MyMemoryPool {
 
         void Delete(T* ptr){
             if(ptr == nullptr) return;
+            std::lock_guard<std::mutex> lock(_mutex); // 确保线程安全
             ptr->~T(); // 调用析构函数
             ptrNext(ptr) = _freeList; // 将释放的内存块插入回自由链表头
             _freeList = ptr;
@@ -221,6 +231,7 @@ namespace MyMemoryPool {
         char* _memory = nullptr; // 内存池的起始地址
         size_t _remainSize = 0; // 剩余空间大小
         void* _freeList = nullptr; // 自由链表头指针
-    }
+        std::mutex _mutex; // 互斥锁，确保线程安全
+    };
 
 } // namespace MyMemoryPool
