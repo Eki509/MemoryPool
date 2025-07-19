@@ -22,7 +22,7 @@ void testMemoryPool(size_t works, size_t rounds, size_t iterations){
                 size_t end_alloc = clock();
                 size_t start_dealloc = clock();
                 for(size_t k = 0; k < iterations; ++k){
-                    localDeallocate(ptrVec[k]);
+                    localDeallocate(ptrVec[k], std::min(((k + 1) * 64) % (512 * 1024) + 1, (size_t)MAX_BYTES));
                 }
                 size_t end_dealloc = clock();
                 ptrVec.clear();
@@ -87,13 +87,13 @@ int main(){
     size_t rounds = 10; // 每个线程执行的轮数
     size_t iterations = 1000; // 每轮分配/释放的次数
 
-    std::cout << "=================Test Memory Pool=================" << std::endl;
+    std::cout << "=======================Test Memory Pool=======================" << std::endl;
     testMemoryPool(works, rounds, iterations);
+    std::cout << "==============================================================" << std::endl;
     std::cout << std::endl;
-    std::cout << "==================================================";
-    std::cout << std::endl;
-    std::cout << "===================Test Malloc====================" << std::endl;
+    std::cout << "==========================Test Malloc=========================" << std::endl;
     testMalloc(works, rounds, iterations);
+    std::cout << "==============================================================" << std::endl;
     std::cout << std::endl;
     return 0;  
 }

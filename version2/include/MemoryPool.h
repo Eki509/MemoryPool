@@ -137,7 +137,6 @@ namespace MyMemoryPool {
             Span* _next = nullptr; // 指向下一个Span的指针
             Span* _prev = nullptr; // 指向上一个Span的指针
             size_t _useCount = 0; // 分配给ThreadCache的使用计数
-            size_t _spanMemorySize = 0; // Span下挂载的的内存块大小
             void* _freeList = nullptr; // 每个Span下挂载的自由链表
             bool _isUse = false; // 是否正在使用
         };
@@ -174,20 +173,20 @@ namespace MyMemoryPool {
             pop(front);
             return front;
         }
-        void clear() { // 清空链表
-            Span* current = _head->_next;
-            while (current != _head) {
-                Span* next = current->_next;
-                delete current; // 释放当前节点的内存
-                current = next; // 移动到下一个节点
-            }
-            _head->_next = _head; // 重置头结点
-            _head->_prev = _head;
-        }
-        ~SpanList() { // 析构函数，释放链表内存
-            clear();
-            delete _head; // 释放头结点内存
-        }
+        // void clear() { // 清空链表
+        //     Span* current = _head->_next;
+        //     while (current != _head) {
+        //         Span* next = current->_next;
+        //         delete current; // 释放当前节点的内存
+        //         current = next; // 移动到下一个节点
+        //     }
+        //     _head->_next = _head; // 重置头结点
+        //     _head->_prev = _head;
+        // }
+        // ~SpanList() { // 析构函数，释放链表内存
+        //     clear();
+        //     delete _head; // 释放头结点内存
+        // }
     private:
         Span* _head;
     };

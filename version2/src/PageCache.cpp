@@ -52,7 +52,7 @@ namespace MyMemoryPool {
             span->_pageID = it->second->_pageID; // 更新当前Span的页ID
             span->_numPages += it->second->_numPages; // 更新当前Span的页数
             _spanList[it->second->_numPages - 1].pop(it->second); // 从对应的链表中删除前一个Span
-            _spanPool.Delete(it->second); // 归还节点，防止内存泄漏
+            // _spanPool.Delete(it->second); // 归还节点，防止内存泄漏
         }
         while(1){ // 向后合并
             PAGE_ID nextID = span->_pageID + span->_numPages;
@@ -62,7 +62,7 @@ namespace MyMemoryPool {
             if(it->second->_numPages + span->_numPages > MAX_PAGES) break; // 合并后页数超过最大页数，不能合并
             span->_numPages += it->second->_numPages; // 更新当前Span的页数
             _spanList[it->second->_numPages - 1].pop(it->second); // 从对应的链表中删除后一个Span
-            _spanPool.Delete(it->second); // 归还节点，防止内存泄漏
+            // _spanPool.Delete(it->second); // 归还节点，防止内存泄漏
         }
         // 将合并后的Span释放到PageCache中
         _spanList[span->_numPages - 1].PushFront(span); // 将合并后的Span挂载到对应的哈希桶上

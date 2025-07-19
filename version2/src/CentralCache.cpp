@@ -39,7 +39,6 @@ SpanList::Span* CentralCache::getSpanFromSpanList(SpanList& spanlist, size_t siz
     PageCache::getInstance()._mutexPage.lock(); // 锁住PageCache的全局互斥锁，防止其他线程申请内存
     SpanList::Span* newSpan = PageCache::getInstance().AllocNewSpanToCentralCache(SizeClass::normPageNum(size));
     newSpan->_isUse = true; // 标记为正在使用
-    newSpan->_spanMemorySize = size; // 设置Span下挂载的内存块大小
     PageCache::getInstance()._mutexPage.unlock();
     void* start = (void*)(newSpan->_pageID << PAGE_SHIFT);
     newSpan->_freeList = start; // 将新分配的内存块作为自由链表的头
